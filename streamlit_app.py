@@ -10,12 +10,12 @@ from twilio.rest import Client
 
 
 # ==============================
-# 🔐 TWILIO CONFIG
+# 🔐 LOAD TWILIO SECRETS
 # ==============================
-ACCOUNT_SID = "AC6d6bfad7869fc35bd540b550a2b5ccdd"
-AUTH_TOKEN = "c090c6bec04d8024c3ba583d98361a27"
-TWILIO_NUMBER = "+13133074835"
-DESTINATION_NUMBER = "+917045239053"
+ACCOUNT_SID = st.secrets["TWILIO_SID"]
+AUTH_TOKEN = st.secrets["TWILIO_AUTH"]
+TWILIO_NUMBER = st.secrets["TWILIO_NUMBER"]
+DESTINATION_NUMBER = st.secrets["DESTINATION_NUMBER"]
 
 
 # ==============================
@@ -29,7 +29,7 @@ def load_models():
 
 
 # ==============================
-# 📲 Send SMS
+# 📲 Send SMS (SAFE + DEBUG)
 # ==============================
 def send_sms(timestamp):
     try:
@@ -41,15 +41,16 @@ def send_sms(timestamp):
             to=DESTINATION_NUMBER
         )
 
+        st.success(f"SMS Sent! SID: {message.sid}")
         return True
 
     except Exception as e:
-        st.error(f"SMS Failed: {e}")
+        st.error(f"SMS Error: {str(e)}")
         return False
 
 
 # ==============================
-# 🎥 Prediction Logic
+# 🎥 Accident Prediction
 # ==============================
 def predict_accident(video_path, model, base_model):
     cap = cv2.VideoCapture(video_path)
@@ -64,18 +65,20 @@ def predict_accident(video_path, model, base_model):
         if not ret:
             break
 
-        if fps > 0 and frame_idx % math.floor(fps) == 0:
+        if fps > 0 and frame_idx % max(1, math.floor(fps)) == 0:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frame_resized = resize(frame_rgb, (224, 224), preserve_range=True).astype(int)
             inp = preprocess_input(np.array([frame_resized]))
 
             feat = base_model.predict(inp, verbose=0)
             feat = feat.reshape(1, 7 * 7 * 512)
-            feat = feat / feat.max()
+
+            if feat.max() != 0:
+                feat = feat / feat.max()
 
             pred = model.predict(feat, verbose=0)[0]
 
-            if pred[0] > pred[1]:  # Accident
+            if pred[0] > pred[1]:
                 timestamps.append(sec)
 
             sec += 1
@@ -87,12 +90,11 @@ def predict_accident(video_path, model, base_model):
 
 
 # ==============================
-# 🚨 Streamlit UI
+# 🚨 UI
 # ==============================
-st.title("🚨 Accident Detection with SMS Alert")
-st.write("Upload video → Detect accident → Send SMS alert")
+st.title("🚨 Accident Detection + SMS Alert")
 
-uploaded_video = st.file_uploader("Upload Video", type=["mp4"])
+uploaded_video = st.file_uploader("Upload MP4 Video", type=["mp4"])
 
 model, base_model = load_models()
 
@@ -101,21 +103,17 @@ if uploaded_video:
         tmp.write(uploaded_video.read())
         path = tmp.name
 
-    with st.spinner("Processing video..."):
+    with st.spinner("Analyzing video..."):
         results = predict_accident(path, model, base_model)
 
-    st.success("Processing Complete!")
-
     if len(results) == 0:
-        st.write("### ✔ No accident detected")
+        st.success("✔ No accident detected.")
     else:
-        st.write("### ⚠ Accident detected at:")
+        st.warning("⚠ Accident detected!")
+
         for t in results:
-            st.write(f"- {t} sec")
+            st.write(f"Detected at: {t} sec")
 
-        # Send SMS only once (first detection)
-        sms_sent = send_sms(results[0])
-
-        if sms_sent:
-            st.success("📲 SMS Alert Sent Successfully!")
+        # Send SMS once
+        send_sms(results[0])
 
