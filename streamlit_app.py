@@ -10,18 +10,18 @@ from twilio.rest import Client
 from streamlit_js_eval import get_geolocation
 
 
-# =====================================
-# 🔐 LOAD SECRETS (Streamlit Cloud)
-# =====================================
+# ======================================================
+# 🔐 LOAD SECRETS
+# ======================================================
 ACCOUNT_SID = st.secrets["TWILIO_SID"]
 AUTH_TOKEN = st.secrets["TWILIO_AUTH"]
 TWILIO_NUMBER = st.secrets["TWILIO_NUMBER"]
 DESTINATION_NUMBER = st.secrets["DESTINATION_NUMBER"]
 
 
-# =====================================
+# ======================================================
 # 📦 LOAD MODELS
-# =====================================
+# ======================================================
 @st.cache_resource
 def load_models():
     model = load_model("accident_model.h5")
@@ -33,14 +33,14 @@ def load_models():
     return model, base_model
 
 
-# =====================================
-# 📲 SEND SMS FUNCTION
-# =====================================
+# ======================================================
+# 📲 SEND SMS
+# ======================================================
 def send_sms(timestamp, lat=None, lon=None):
     try:
         client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
-        if lat is not None and lon is not None:
+        if lat and lon:
             maps_link = f"https://maps.google.com/?q={lat},{lon}"
             body = (
                 f"🚨 ACCIDENT ALERT!\n\n"
@@ -48,23 +48,27 @@ def send_sms(timestamp, lat=None, lon=None):
                 f"📍 Location:\n{maps_link}"
             )
         else:
-            body = f"🚨 ACCIDENT ALERT!\nDetected at: {timestamp} sec"
+            body = (
+                f"🚨 ACCIDENT ALERT!\n\n"
+                f"Detected at: {timestamp} sec\n\n"
+                f"📍 Location: Not Available"
+            )
 
-        message = client.messages.create(
+        client.messages.create(
             body=body,
             from_=TWILIO_NUMBER,
             to=DESTINATION_NUMBER
         )
 
-        st.success(f"📲 SMS Sent Successfully!")
+        st.success("📲 SMS Sent Successfully!")
 
     except Exception as e:
         st.error(f"SMS Failed: {str(e)}")
 
 
-# =====================================
-# 🎥 ACCIDENT DETECTION LOGIC
-# =====================================
+# ======================================================
+# 🎥 ACCIDENT DETECTION
+# ======================================================
 def predict_accident(video_path, model, base_model):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
@@ -81,7 +85,8 @@ def predict_accident(video_path, model, base_model):
         if fps > 0 and frame_idx % max(1, int(fps)) == 0:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frame_resized = resize(
-                frame_rgb, (224, 224),
+                frame_rgb,
+                (224, 224),
                 preserve_range=True
             ).astype(int)
 
@@ -107,38 +112,51 @@ def predict_accident(video_path, model, base_model):
     return timestamps
 
 
-# =====================================
+# ======================================================
 # 🚨 STREAMLIT UI
-# =====================================
-st.title("🚨 Accident Detection + SMS + Live Location")
+# ======================================================
+st.title("🚨 Accident Detection + SMS + Location")
 
-st.write("Upload video → Detect accident → Send SMS with Google Maps location")
+st.write("Step 1: Capture location → Step 2: Upload video → Step 3: SMS alert")
 
-# -------------------------------
-# 🌍 SAFE GEOLOCATION HANDLING
-# -------------------------------
+
+# ------------------------------------------------------
+# 📍 MANUAL LOCATION CAPTURE (RELIABLE)
+# ------------------------------------------------------
+if "user_location" not in st.session_state:
+    st.session_state.user_location = None
+
+if st.button("📍 Capture My Location"):
+    location = get_geolocation()
+
+    if location and isinstance(location, dict) and "coords" in location:
+        coords = location["coords"]
+        lat = coords.get("latitude")
+        lon = coords.get("longitude")
+
+        if lat and lon:
+            st.session_state.user_location = (lat, lon)
+            st.success("Location captured successfully!")
+        else:
+            st.warning("Coordinates not available.")
+    else:
+        st.warning("Location permission denied or unavailable.")
+
+
+# Display stored location
 lat = None
 lon = None
 
-location = get_geolocation()
-
-if location and isinstance(location, dict) and "coords" in location:
-    coords = location["coords"]
-
-    lat = coords.get("latitude")
-    lon = coords.get("longitude")
-
-    if lat is not None and lon is not None:
-        st.success(f"📍 Location detected")
-    else:
-        st.warning("Location available but coordinates missing.")
+if st.session_state.user_location:
+    lat, lon = st.session_state.user_location
+    st.info(f"Using Location: {lat}, {lon}")
 else:
-    st.info("Location permission not granted or unavailable.")
+    st.info("No location captured yet.")
 
 
-# -------------------------------
+# ------------------------------------------------------
 # 📤 VIDEO UPLOAD
-# -------------------------------
+# ------------------------------------------------------
 uploaded_video = st.file_uploader("Upload MP4 Video", type=["mp4"])
 
 model, base_model = load_models()
@@ -159,5 +177,6 @@ if uploaded_video:
         for t in results:
             st.write(f"Detected at: {t} sec")
 
-        # Send SMS once (first detection only)
+        # Send SMS once
         send_sms(results[0], lat, lon)
+
