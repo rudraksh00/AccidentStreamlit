@@ -7,10 +7,11 @@ from tensorflow.keras.models import load_model
 from tensorflow.keras.applications.vgg16 import VGG16, preprocess_input
 from skimage.transform import resize
 from twilio.rest import Client
+from streamlit_js_eval import get_geolocation
 
 
 # ==============================
-# 🔐 LOAD TWILIO SECRETS
+# 🔐 LOAD SECRETS
 # ==============================
 ACCOUNT_SID = st.secrets["TWILIO_SID"]
 AUTH_TOKEN = st.secrets["TWILIO_AUTH"]
@@ -19,38 +20,46 @@ DESTINATION_NUMBER = st.secrets["DESTINATION_NUMBER"]
 
 
 # ==============================
-# 📦 Load Models
+# 📦 LOAD MODELS
 # ==============================
 @st.cache_resource
 def load_models():
     model = load_model("accident_model.h5")
-    base = VGG16(weights='imagenet', include_top=False, input_shape=(224, 224, 3))
+    base = VGG16(weights="imagenet", include_top=False, input_shape=(224, 224, 3))
     return model, base
 
 
 # ==============================
-# 📲 Send SMS (SAFE + DEBUG)
+# 📲 SEND SMS
 # ==============================
-def send_sms(timestamp):
+def send_sms(timestamp, lat=None, lon=None):
     try:
         client = Client(ACCOUNT_SID, AUTH_TOKEN)
 
+        if lat and lon:
+            maps_link = f"https://maps.google.com/?q={lat},{lon}"
+            body = (
+                f"🚨 ACCIDENT ALERT!\n\n"
+                f"Detected at: {timestamp} sec\n\n"
+                f"📍 Location:\n{maps_link}"
+            )
+        else:
+            body = f"🚨 ACCIDENT ALERT!\nDetected at: {timestamp} sec"
+
         message = client.messages.create(
-            body=f"🚨 ALERT! Accident detected at {timestamp} seconds.",
+            body=body,
             from_=TWILIO_NUMBER,
             to=DESTINATION_NUMBER
         )
 
-        st.success(f"SMS Sent! SID: {message.sid}")
-        return True
+        st.success(f"📲 SMS Sent! SID: {message.sid}")
 
     except Exception as e:
-        st.error(f"SMS Error: {str(e)}")
-        return False
+        st.error(f"SMS Failed: {str(e)}")
 
 
 # ==============================
-# 🎥 Accident Prediction
+# 🎥 PREDICTION LOGIC
 # ==============================
 def predict_accident(video_path, model, base_model):
     cap = cv2.VideoCapture(video_path)
@@ -92,7 +101,22 @@ def predict_accident(video_path, model, base_model):
 # ==============================
 # 🚨 UI
 # ==============================
-st.title("🚨 Accident Detection + SMS Alert")
+st.title("🚨 Accident Detection + SMS + Live Location")
+
+st.write("Upload a video → Detect accident → Send SMS with live GPS location")
+
+# Get browser location
+location = get_geolocation()
+
+if location:
+    lat = location["coords"]["latitude"]
+    lon = location["coords"]["longitude"]
+    st.success(f"📍 Location detected: {lat}, {lon}")
+else:
+    lat = None
+    lon = None
+    st.warning("Location permission not granted.")
+
 
 uploaded_video = st.file_uploader("Upload MP4 Video", type=["mp4"])
 
@@ -109,11 +133,12 @@ if uploaded_video:
     if len(results) == 0:
         st.success("✔ No accident detected.")
     else:
-        st.warning("⚠ Accident detected!")
+        st.error("⚠ Accident detected!")
 
         for t in results:
             st.write(f"Detected at: {t} sec")
 
-        # Send SMS once
-        send_sms(results[0])
+        # Send SMS once (first detection)
+        send_sms(results[0], lat, lon)
+
 
