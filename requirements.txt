@@ -5,3 +5,4 @@ opencv-python-headless
 scikit-image
 numpy
 twilio
+streamlit-js-eval
