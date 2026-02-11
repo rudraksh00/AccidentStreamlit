@@ -6,9 +6,21 @@ import tempfile
 from tensorflow.keras.models import load_model
 from tensorflow.keras.applications.vgg16 import VGG16, preprocess_input
 from skimage.transform import resize
-import os
+from twilio.rest import Client
 
 
+# ==============================
+# 🔐 LOAD TWILIO SECRETS
+# ==============================
+ACCOUNT_SID = st.secrets["TWILIO_SID"]
+AUTH_TOKEN = st.secrets["TWILIO_AUTH"]
+TWILIO_NUMBER = st.secrets["TWILIO_NUMBER"]
+DESTINATION_NUMBER = st.secrets["DESTINATION_NUMBER"]
+
+
+# ==============================
+# 📦 Load Models
+# ==============================
 @st.cache_resource
 def load_models():
     model = load_model("accident_model.h5")
@@ -16,125 +28,92 @@ def load_models():
     return model, base
 
 
-def process_video(video_path, model, base_model):
+# ==============================
+# 📲 Send SMS (SAFE + DEBUG)
+# ==============================
+def send_sms(timestamp):
+    try:
+        client = Client(ACCOUNT_SID, AUTH_TOKEN)
+
+        message = client.messages.create(
+            body=f"🚨 ALERT! Accident detected at {timestamp} seconds.",
+            from_=TWILIO_NUMBER,
+            to=DESTINATION_NUMBER
+        )
+
+        st.success(f"SMS Sent! SID: {message.sid}")
+        return True
+
+    except Exception as e:
+        st.error(f"SMS Error: {str(e)}")
+        return False
+
+
+# ==============================
+# 🎥 Accident Prediction
+# ==============================
+def predict_accident(video_path, model, base_model):
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS)
+
     frame_idx = 0
     sec = 0
-
-    accident_timestamps = []
-    accident_frames = []
-    annotated_frames = []
+    timestamps = []
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        if frame_idx % math.floor(fps) == 0:
+        if fps > 0 and frame_idx % max(1, math.floor(fps)) == 0:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            resized = resize(frame_rgb, (224,224), preserve_range=True).astype(int)
-            inp = preprocess_input(np.array([resized]), data_format=None)
+            frame_resized = resize(frame_rgb, (224, 224), preserve_range=True).astype(int)
+            inp = preprocess_input(np.array([frame_resized]))
 
-            feat = base_model.predict(inp)
-            feat = feat.reshape(1, 7*7*512)
-            feat = feat/feat.max()
-            pred = model.predict(feat)[0]
+            feat = base_model.predict(inp, verbose=0)
+            feat = feat.reshape(1, 7 * 7 * 512)
 
-            accident = pred[0] > pred[1]
+            if feat.max() != 0:
+                feat = feat / feat.max()
 
-            if accident:
-                accident_timestamps.append(sec)
-                accident_frames.append(frame_rgb)
+            pred = model.predict(feat, verbose=0)[0]
 
-                annotated = frame_rgb.copy()
-                cv2.putText(annotated, "ACCIDENT", (20,40), cv2.FONT_HERSHEY_SIMPLEX, 
-                            1, (255,0,0), 2, cv2.LINE_AA)
-                annotated_frames.append(annotated)
+            if pred[0] > pred[1]:
+                timestamps.append(sec)
 
             sec += 1
 
         frame_idx += 1
 
     cap.release()
-
-    return accident_timestamps, accident_frames, annotated_frames, fps
-
+    return timestamps
 
 
-st.title("🚨 Accident Detection AI - Full Visual Version")
-
-model, base_model = load_models()
+# ==============================
+# 🚨 UI
+# ==============================
+st.title("🚨 Accident Detection + SMS Alert")
 
 uploaded_video = st.file_uploader("Upload MP4 Video", type=["mp4"])
 
-if uploaded_video:
-    # preview original
-    st.subheader("Original Video")
-    st.video(uploaded_video)
+model, base_model = load_models()
 
+if uploaded_video:
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
         tmp.write(uploaded_video.read())
-        video_path = tmp.name
+        path = tmp.name
 
-    with st.spinner("Processing AI detection..."):
-        timestamps, frames, annotated, fps = process_video(video_path, model, base_model)
+    with st.spinner("Analyzing video..."):
+        results = predict_accident(path, model, base_model)
 
-    st.success("AI processing completed!")
-
-    # timestamps result
-    if timestamps:
-        st.subheader("⚠ Accident Detected At:")
-        st.write(", ".join([f"{t}s" for t in timestamps]))
+    if len(results) == 0:
+        st.success("✔ No accident detected.")
     else:
-        st.subheader("✔ No Accident Detected")
-        st.stop()
+        st.warning("⚠ Accident detected!")
 
-    # show evidence frames
-    st.subheader("🖼 Accident Evidence Frames")
-    for i, f in enumerate(frames):
-        st.image(f, caption=f"{timestamps[i]}s", use_column_width=True)
+        for t in results:
+            st.write(f"Detected at: {t} sec")
 
-    # build annotated output video
-    st.subheader("🎥 Annotated Video Output")
-    out_path = video_path.replace(".mp4", "_processed.mp4")
+        # Send SMS once
+        send_sms(results[0])
 
-    cap = cv2.VideoCapture(video_path)
-    width = int(cap.get(3))
-    height = int(cap.get(4))
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
-
-    sec = 0
-    frame_idx = 0
-
-    cap = cv2.VideoCapture(video_path)
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        accident = sec in timestamps and frame_idx % math.floor(fps) == 0
-
-        if accident:
-            cv2.putText(frame, "ACCIDENT", (20,40), cv2.FONT_HERSHEY_SIMPLEX,
-                        1.3, (0,0,255), 3, cv2.LINE_AA)
-
-        out.write(frame)
-
-        if frame_idx % math.floor(fps) == 0:
-            sec += 1
-        frame_idx += 1
-
-    cap.release()
-    out.release()
-
-    st.video(out_path)
-
-    with open(out_path, "rb") as f:
-        st.download_button(
-            label="⬇ Download Annotated Video",
-            data=f,
-            file_name="accident_annotated.mp4",
-            mime="video/mp4"
-        )
